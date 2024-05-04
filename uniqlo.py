@@ -100,12 +100,27 @@ class UniqloStockMonitor:
         except KeyError:
             exit('配置文件有误！')
 
+    def push_message_bark(self, title, body):
+        push_info = self.get_file_info('push')
+        return requests.get(f"https://api.day.app/{push_info['key']}/{title}/{body}"
+                            f"?level=timeSensitive&sound=glass").json()
+
+    def push_message_pushplus(self, title, body):
+        push_info = self.get_file_info('push')
+        token = push_info.get('pushplus_token')
+        if token:
+            url = f"http://www.pushplus.plus/send?token={token}&title={title}&content={body}"
+            return requests.get(url).json()
+        else:
+            print("未配置PushPlus通知，请先配置！")
+
     def push_message(self, title, body):
         push_info = self.get_file_info('push')
         if push_info['type'] == 'bark':
-            return requests.get(f"https://api.day.app/{push_info['key']}/{title}/{body}"
-                                f"?level=timeSensitive&sound=glass").json()
-
+            return self.push_message_bark(title, body)
+        elif push_info['type'] == 'pushplus':
+            return self.push_message_pushplus(title, body)
+    
     def get_stock(self, product_code):
         """
         获取商品库存（仅快递库存）
@@ -308,10 +323,36 @@ class UniqloStockMonitor:
 
             monitor_recorde.write(write_data)
             monitor_recorde.close()
-
+            
+    def push_message_to_pushplus(token, title, content):
+        url = 'http://www.pushplus.plus/send'
+        data = {
+            "token": token,
+            "title": title,
+            "content": content
+        }
+        r = requests.post(url, data=data)
+        return r.json()
+    
     def add_monitor_product(self, code=None):
         if not self.check_file():
             self.check_file(True, type='bark', key=input('请输入bark的设备码: '))
+        push_type = input("请选择通知方式（bark/pushplus）: ")
+        if push_type == 'bark':
+            key = input('请输入bark的设备码: ')
+            push_info = {"type": 'bark', "key": key}
+        elif push_type == 'pushplus':
+            token = input('请输入PushPlus的Token: ')
+            push_info = {"type": 'pushplus', "pushplus_token": token}
+        else:
+            exit('请选择正确的通知方式！')
+
+        file_data = self.get_file_info('all')
+        file_data['push'] = push_info
+        monitor_recorde = open('monitor_config.json', 'w+')
+        monitor_recorde.write(json.dumps(file_data, ensure_ascii=False, indent=4))
+        monitor_recorde.close()
+        print("通知方式配置成功！")
 
         try:
             if code is None:
@@ -382,12 +423,12 @@ class UniqloStockMonitor:
             print(f"{'降价监控: ' if depreciate_warning else '库存监控: '}"
                   f"【{choice_product_info['style']} | 库存: {stocks} ｜ {choice_product_info['size']}】{product_info['name']}")
 
-            push_message = f"【{choice_product_info['style']} | {choice_product_info['size'].replace('/', ' ')}】" \
-                           f"{product_info['name']} {product_info['code']}\n" \
-                           f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())} 当前库存: {stocks} 价格: {vary_price}" \
-                           f"?group=Uniqlo&icon=https://www.uniqlo.cn/public/Image/L1/nav/nav-logo/LOGO.gif" \
-                           f"&url=https://www.uniqlo.cn/product-detail.html?" \
-                           f"productCode={choice_product_info['productId'][:-3]}&productId={choice_product_info['productId']}"
+            push_message = f"商品型号：【{choice_product_info['style']} | {choice_product_info['size'].replace('/', ' ')}】" \
+                           f"{product_info['name']} {product_info['code']}<br/>" \
+                           f"查询时间：{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}<br/>" \
+                           f"当前库存: {stocks}<br/>" \
+                           f"价格: {vary_price}<br/>" \
+                           f"<a href='https://www.uniqlo.cn/product-detail.html?productCode={choice_product_info['productId'][:-3]}'>查看商品详情</a>"
             # 降价
             if depreciate_warning and stocks >= 1:
                 if float(target_price) >= float(vary_price):
@@ -395,14 +436,14 @@ class UniqloStockMonitor:
                           end='')
                     print(f"当前库存: {stocks}")
                     print(f"当前价格: {vary_price}")
-                    self.push_message('优衣库降价库存监控', push_message)
+                    self.push_message('UNIQLO-Price!⬇️', push_message)
             elif stocks >= 1:
                 print(f"【{choice_product_info['style']} | {choice_product_info['size']}】{product_info['name']} ",
                       end='')
                 print(f"当前库存: {stocks}")
                 # TODO 创建订单报错
                 # creat_order(choice_product_info)
-                self.push_message('优衣库库存监控', push_message)
+                self.push_message('UNIQLO-Stocks!🆕', push_message)
 
     def monitor(self):
         if not self.check_file():
@@ -437,20 +478,19 @@ class UniqloStockMonitor:
                 print('--------------------------------------------')
 
         print('-----------------开始监控库存-----------------')
-        self.push_message('优衣库监控已启动', '?group=Uniqlo&icon=https://www.uniqlo.cn/public/Image/L1/nav/nav-logo/LOGO.gif')
+        # self.push_message('UNIQLO-start!', '?group=Uniqlo&icon=https://www.uniqlo.cn/public/Image/L1/nav/nav-logo/LOGO.gif')
         while True:
             print(time.strftime("%m-%d %H:%M:%S", time.localtime()))
-            hour = time.strftime('%H', time.localtime())
-            sleep_time = random.randint(10, 30) \
-                if hour not in ['03', '04', '05', '06'] else random.randint(40, 60)
             try:
                 self.check_stock(recorde_history)
             except KeyboardInterrupt:
                 print('KeyboardInterrupt')
-                return
-            except:
+                break
+            except Exception as e:
                 print("出错，重试！")
-            time.sleep(sleep_time * 60 if sleep_time >= 40 else sleep_time)
+                print(e)
+            sleep_time = random.randint(180, 600)  # 3 分钟到 10 分钟内的随机时间
+            time.sleep(sleep_time)
 
 
 if __name__ == '__main__':
@@ -459,7 +499,7 @@ if __name__ == '__main__':
     args = sys.argv
 
     # 如需命令行模式，取消注释
-    # uniqlo.main()
+    uniqlo.main()
 
     if len(args) == 1:
         print(f"""
